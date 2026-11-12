@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     APP_BASE_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:3000"
+    CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
     VERIFICATION_TOKEN_HOURS: int = 24
 
     JWT_SECRET: str

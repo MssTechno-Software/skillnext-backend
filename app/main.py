@@ -5,6 +5,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.database import Base, engine
 from app.routers import auth, pages
 from fastapi.middleware.cors import CORSMiddleware
+from app.config import settings
 
 Base.metadata.create_all(bind=engine)
 

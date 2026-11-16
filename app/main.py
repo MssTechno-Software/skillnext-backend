@@ -5,7 +5,13 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.database import Base, engine
 from app.routers import auth, pages
 from fastapi.middleware.cors import CORSMiddleware
+from app.routers import auth, categories, courses, pages
 from app.config import settings
+from app.routers import auth, categories, course_content, courses, pages
+from app.routers import module_videos
+from app.routers import enrollments
+from app.routers import assignments
+import app.assignment_models 
 
 Base.metadata.create_all(bind=engine)
 
@@ -23,6 +29,15 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(pages.router)
+app.include_router(auth.router)
+app.include_router(categories.router)
+app.include_router(courses.router)
+app.include_router(pages.router)
+app.include_router(courses.router)
+app.include_router(course_content.router)
+app.include_router(module_videos.router)
+app.include_router(enrollments.router)
+app.include_router(assignments.router)
 
 
 @app.exception_handler(RequestValidationError)

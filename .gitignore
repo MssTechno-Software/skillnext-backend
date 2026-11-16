@@ -2,3 +2,9 @@ venv/
 __pycache__/
 *.pyc
 .env
+# Google OAuth credentials
+
+token.json
+
+token.json
+token_backup.json

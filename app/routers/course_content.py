@@ -10,6 +10,10 @@ from app.dependencies import get_current_user, require_role
 from app.models import Course, CourseModule, ModuleContent, User
 from app.routers.courses import _get_or_404 as get_course_or_404
 from app.routers.courses import _require_owner
+from pydantic import Field
+from sqlalchemy.exc import IntegrityError
+from app.models import Course, CourseModule, Enrollment, ModuleContent, User
+from app.schemas import CamelModel, MyCourseOut  # add to your existing schemas import
 from app.schemas import (
     ApiResponse,
     ContentCreate,
@@ -381,4 +385,91 @@ def course_overview(
             hidden_contents=hidden_contents if teacher else None,
             modules=modules,
         )
+    )
+
+
+# ===================================================== SELF-ENROLL (student)
+class SelfEnrollRequest(CamelModel):
+    course_ids: list[int] = Field(min_length=1, max_length=50)
+
+
+class SelfEnrollSkipped(CamelModel):
+    course_id: int
+    reason: str
+
+
+class SelfEnrollResult(CamelModel):
+    enrolled: list[MyCourseOut]
+    already_enrolled: list[int]
+    skipped: list[SelfEnrollSkipped]
+
+
+@router.post(
+    "/courses/enroll/me",
+    response_model=ApiResponse[SelfEnrollResult],
+    status_code=status.HTTP_201_CREATED,
+)
+def self_enroll(
+    payload: SelfEnrollRequest,
+    response: Response,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Student adds one or many courses of their choice to their own account.
+
+    Never half-fails: unknown/hidden courses and ones already added are reported
+    back and the rest are enrolled.
+    """
+    course_ids = list(dict.fromkeys(payload.course_ids))
+
+    courses = {c.id: c for c in db.scalars(select(Course).where(Course.id.in_(course_ids)))}
+    existing = set(
+        db.scalars(
+            select(Enrollment.course_id).where(
+                Enrollment.student_id == user.id,
+                Enrollment.course_id.in_(course_ids),
+            )
+        )
+    )
+
+    new_rows: list[Enrollment] = []
+    already: list[int] = []
+    skipped: list[SelfEnrollSkipped] = []
+
+    for cid in course_ids:
+        course = courses.get(cid)
+        if course is None or not (course.visible and course.category.visible):
+            skipped.append(SelfEnrollSkipped(course_id=cid, reason="Course not found."))
+        elif cid in existing:
+            already.append(cid)
+        else:
+            new_rows.append(
+                Enrollment(course_id=cid, student_id=user.id, enrolled_by=user.id)
+            )
+
+    try:
+        db.add_all(new_rows)
+        db.commit()
+    except IntegrityError:  # same course added twice at the same moment
+        db.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "Enrollment changed while saving, please retry."
+        )
+
+    if not new_rows:
+        response.status_code = status.HTTP_200_OK
+
+    message = f"{len(new_rows)} course(s) added."
+    if already:
+        message += f" {len(already)} already added."
+    if skipped:
+        message += f" {len(skipped)} skipped."
+
+    return ApiResponse(
+        message=message,
+        data=SelfEnrollResult(
+            enrolled=[MyCourseOut.model_validate(e) for e in new_rows],
+            already_enrolled=already,
+            skipped=skipped,
+        ),
     )

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status,Response
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -473,3 +473,358 @@ def self_enroll(
             skipped=skipped,
         ),
     )
+
+
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import Field
+from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint, func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Mapped, Session, contains_eager, mapped_column
+
+from app.database import Base
+from app.models import Category, Course, CourseModule, Enrollment, ModuleContent, User, utcnow
+from app.schemas import ApiResponse, CamelModel, CourseOut  # keep your other schema imports too
+
+
+# ================================================== PROGRESS / MY LEARNINGS
+class ContentProgress(Base):
+    """A student marked one content item as completed (one row per student per item)."""
+
+    __tablename__ = "content_progress"
+    __table_args__ = (
+        UniqueConstraint("student_id", "content_id", name="uq_content_progress_student_content"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    content_id: Mapped[int] = mapped_column(
+        ForeignKey("module_contents.id", ondelete="CASCADE"), index=True
+    )
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CourseProgress(CamelModel):
+    course_id: int
+    total_items: int
+    completed_items: int
+    percentage: float
+    status: str  # not_started | in_progress | completed
+    completed_content_ids: list[int] = []
+
+
+class LearningOut(CamelModel):
+    course: CourseOut
+    enrolled_at: datetime
+    total_items: int
+    completed_items: int
+    percentage: float
+    status: str
+
+
+def _status(done: int, total: int) -> str:
+    if total > 0 and done >= total:
+        return "completed"
+    return "in_progress" if done > 0 else "not_started"
+
+
+def _percentage(done: int, total: int) -> float:
+    return round(done * 100 / total, 1) if total else 0.0
+
+
+def _progress_counts(db: Session, student_id: int, course_ids: list[int]) -> dict[int, tuple[int, int]]:
+    """{course_id: (total_items, completed_items)} - only visible modules/items count."""
+    if not course_ids:
+        return {}
+    visible_items = (
+        select(CourseModule.course_id, ModuleContent.id.label("content_id"))
+        .join(ModuleContent, ModuleContent.module_id == CourseModule.id)
+        .where(
+            CourseModule.course_id.in_(course_ids),
+            CourseModule.visible.is_(True),
+            ModuleContent.visible.is_(True),
+        )
+        .subquery()
+    )
+    totals = dict(
+        db.execute(
+            select(visible_items.c.course_id, func.count()).group_by(visible_items.c.course_id)
+        ).all()
+    )
+    done = dict(
+        db.execute(
+            select(visible_items.c.course_id, func.count())
+            .join(ContentProgress, ContentProgress.content_id == visible_items.c.content_id)
+            .where(ContentProgress.student_id == student_id)
+            .group_by(visible_items.c.course_id)
+        ).all()
+    )
+    return {cid: (totals.get(cid, 0), done.get(cid, 0)) for cid in course_ids}
+
+
+def _course_progress(db: Session, student_id: int, course_id: int) -> CourseProgress:
+    total, done = _progress_counts(db, student_id, [course_id])[course_id]
+    ids = list(
+        db.scalars(
+            select(ContentProgress.content_id)
+            .join(ModuleContent, ModuleContent.id == ContentProgress.content_id)
+            .join(CourseModule, CourseModule.id == ModuleContent.module_id)
+            .where(
+                ContentProgress.student_id == student_id,
+                CourseModule.course_id == course_id,
+                CourseModule.visible.is_(True),
+                ModuleContent.visible.is_(True),
+            )
+        )
+    )
+    return CourseProgress(
+        course_id=course_id,
+        total_items=total,
+        completed_items=done,
+        percentage=_percentage(done, total),
+        status=_status(done, total),
+        completed_content_ids=ids,
+    )
+
+
+def _enrolled_content(db: Session, content_id: int, user: User) -> ModuleContent:
+    content = _get_content(db, content_id, user)  # 404 for hidden items
+    module = db.get(CourseModule, content.module_id)
+    enrolled = db.scalar(
+        select(Enrollment.id).where(
+            Enrollment.course_id == module.course_id, Enrollment.student_id == user.id
+        )
+    )
+    if enrolled is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Enroll in this course first.")
+    return content
+
+
+# @router.post("/contents/{content_id}/complete", response_model=ApiResponse[CourseProgress])
+# def mark_content_complete(
+#     content_id: int,
+#     db: Session = Depends(get_db),
+#     user: User = Depends(require_role("student")),
+# ):
+#     """Student marks one lesson/video/document as done. Safe to call twice."""
+#     content = _enrolled_content(db, content_id, user)
+#     course_id = db.get(CourseModule, content.module_id).course_id
+
+#     already = db.scalar(
+#         select(ContentProgress.id).where(
+#             ContentProgress.student_id == user.id, ContentProgress.content_id == content.id
+#         )
+#     )
+#     if already is None:
+#         try:
+#             db.add(ContentProgress(student_id=user.id, content_id=content.id, course_id=course_id))
+#             db.commit()
+#         except IntegrityError:  # double click - already saved
+#             db.rollback()
+
+#     progress = _course_progress(db, user.id, course_id)
+#     msg = "Course completed." if progress.status == "completed" else "Marked as complete."
+#     return ApiResponse(message=msg, data=progress)
+
+
+@router.delete("/contents/{content_id}/complete", response_model=ApiResponse[CourseProgress])
+def mark_content_incomplete(
+    content_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    content = _enrolled_content(db, content_id, user)
+    course_id = db.get(CourseModule, content.module_id).course_id
+    row = db.scalar(
+        select(ContentProgress).where(
+            ContentProgress.student_id == user.id, ContentProgress.content_id == content.id
+        )
+    )
+    if row is not None:
+        db.delete(row)
+        db.commit()
+    return ApiResponse(
+        message="Marked as not complete.", data=_course_progress(db, user.id, course_id)
+    )
+
+
+@router.get("/courses/{course_id}/progress", response_model=ApiResponse[CourseProgress])
+def course_progress(
+    course_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Percentage plus the ids of finished items (use them to tick items on the course page)."""
+    course = get_course_or_404(db, course_id, user)
+    return ApiResponse(data=_course_progress(db, user.id, course.id))
+
+
+@router.get("/my-learnings", response_model=ApiResponse[list[LearningOut]])
+def my_learnings(
+    status_filter: str | None = Query(
+        None, alias="status", pattern="^(not_started|in_progress|completed)$"
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Enrolled courses with completion percentage (optional ?status=in_progress|completed)."""
+    rows = db.scalars(
+        select(Enrollment)
+        .join(Course, Course.id == Enrollment.course_id)
+        .join(Category, Category.id == Course.category_id)
+        .where(
+            Enrollment.student_id == user.id,
+            Course.visible.is_(True),
+            Category.visible.is_(True),
+        )
+        .options(contains_eager(Enrollment.course))
+        .order_by(Enrollment.enrolled_at.desc(), Enrollment.id.desc())
+    ).all()
+
+    counts = _progress_counts(db, user.id, [e.course_id for e in rows])
+    items = []
+    for e in rows:
+        total, done = counts[e.course_id]
+        st = _status(done, total)
+        if status_filter and st != status_filter:
+            continue
+        items.append(
+            LearningOut(
+                course=CourseOut.model_validate(e.course),
+                enrolled_at=e.enrolled_at,
+                total_items=total,
+                completed_items=done,
+                percentage=_percentage(done, total),
+                status=st,
+            )
+        )
+    return ApiResponse(data=items)
+
+
+# ================================================== MODULE COMPLETE (student)
+class ModuleProgressOut(CamelModel):
+    module_id: int
+    name: str
+    total_contents: int
+    completed_contents: int
+    percentage: float
+    status: str  # not_started | in_progress | completed
+
+
+class CourseModuleProgressOut(CamelModel):
+    course_id: int
+    total_modules: int
+    completed_modules: int
+    percentage: float
+    status: str  # not_started | in_progress | completed
+    modules: list[ModuleProgressOut]
+
+
+def _pct(done: int, total: int) -> float:
+    return round(done * 100 / total, 1) if total else 0.0
+
+
+def _status(done: int, total: int) -> str:
+    if total and done >= total:
+        return "completed"
+    return "in_progress" if done else "not_started"
+
+
+def _build_course_progress(db: Session, student_id: int, course: Course) -> CourseModuleProgressOut:
+    done_ids = set(
+        db.scalars(
+            select(ContentProgress.content_id).where(
+                ContentProgress.student_id == student_id,
+                ContentProgress.course_id == course.id,
+            )
+        )
+    )
+    modules_out: list[ModuleProgressOut] = []
+    for m in course.modules:  # ordered by position
+        if not m.visible:
+            continue
+        items = [c for c in m.contents if c.visible]
+        if not items:  # empty modules can't be completed, so leave them out of the count
+            continue
+        done = sum(1 for c in items if c.id in done_ids)
+        modules_out.append(
+            ModuleProgressOut(
+                module_id=m.id,
+                name=m.name,
+                total_contents=len(items),
+                completed_contents=done,
+                percentage=_pct(done, len(items)),
+                status=_status(done, len(items)),
+            )
+        )
+
+    completed = sum(1 for m in modules_out if m.status == "completed")
+    return CourseModuleProgressOut(
+        course_id=course.id,
+        total_modules=len(modules_out),
+        completed_modules=completed,
+        percentage=_pct(completed, len(modules_out)),
+        status=_status(completed, len(modules_out)),
+        modules=modules_out,
+    )
+
+
+@router.post(
+    "/modules/{module_id}/complete",
+    response_model=ApiResponse[CourseModuleProgressOut],
+)
+def mark_module_complete(
+    module_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Student marks a whole module as done. Safe to call twice.
+
+    Returns the course completion % (completed modules / total modules)
+    and the completion % of every module in the course.
+    """
+    module = _get_module(db, module_id, user)
+    course = module.course
+
+    enrolled = db.scalar(
+        select(Enrollment.id).where(
+            Enrollment.course_id == course.id, Enrollment.student_id == user.id
+        )
+    )
+    if enrolled is None:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "You are not enrolled in this course.")
+
+    contents = [c for c in module.contents if c.visible]
+    if not contents:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY, "This module has no content to complete."
+        )
+
+    done_ids = set(
+        db.scalars(
+            select(ContentProgress.content_id).where(
+                ContentProgress.student_id == user.id,
+                ContentProgress.content_id.in_([c.id for c in contents]),
+            )
+        )
+    )
+    new_rows = [
+        ContentProgress(student_id=user.id, content_id=c.id, course_id=course.id)
+        for c in contents
+        if c.id not in done_ids
+    ]
+    try:
+        db.add_all(new_rows)
+        db.commit()
+    except IntegrityError:  # double click - already saved
+        db.rollback()
+
+    progress = _build_course_progress(db, user.id, course)
+    msg = "Course completed." if progress.status == "completed" else "Module marked as complete."
+    return ApiResponse(message=msg, data=progress)

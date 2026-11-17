@@ -759,3 +759,35 @@ class MyCourseOut(CamelModel):
 
     course: CourseOut
     enrolled_at: datetime
+
+
+from pydantic import BaseModel, ConfigDict
+
+
+class ContentSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    title: str
+    content_type: str
+    position: int | None = None
+    visible: bool = True
+    url: str | None = None
+    download_url: str | None = None
+    preview_url: str | None = None
+
+
+class ModuleOverview(ModuleOut):
+    total_contents: int = 0
+    contents_by_type: dict[str, int] = {}
+    contents: list[ContentSummary] = []
+
+
+class CourseOverviewData(BaseModel):
+    course: CourseOut
+    total_modules: int
+    total_contents: int
+    contents_by_type: dict[str, int]
+    hidden_modules: int | None = None   # teacher only
+    hidden_contents: int | None = None  # teacher only
+    modules: list[ModuleOverview]

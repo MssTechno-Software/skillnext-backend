@@ -4,8 +4,10 @@ __pycache__/
 .env
 # Google OAuth credentials
 
-token.json
+# token.json
 
-token.json
+# token.json
+# token_backup.json
+# *token*.jsontoken_backup.json
 token_backup.json
-*token*.json
+on*token_backup*

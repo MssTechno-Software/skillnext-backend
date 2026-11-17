@@ -15,6 +15,10 @@
 #     JWT_ALGORITHM: str = "HS256"
 #     ACCESS_TOKEN_MINUTES: int = 60
 
+#     DRIVE_ROOT_FOLDER_ID: str = ""
+#     MAX_VIDEO_SIZE_MB: int = 500
+#     MAX_DOCUMENT_SIZE_MB: int = 50
+#     DRIVE_TOKEN_FILE: str = "token_backup.json"
 #     SMTP_HOST: str = ""
 #     SMTP_PORT: int = 587
 #     SMTP_USER: str = ""
@@ -23,6 +27,7 @@
 
 
 # settings = Settings()
+
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -41,7 +46,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_MINUTES: int = 60
 
     DRIVE_ROOT_FOLDER_ID: str = ""
-    DRIVE_TOKEN_FILE: str = "token.json"
+    DRIVE_TOKEN_FILE: str = "token_backup.json"
     MAX_VIDEO_SIZE_MB: int = 500
     MAX_DOCUMENT_SIZE_MB: int = 50
 

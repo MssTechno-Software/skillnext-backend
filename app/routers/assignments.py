@@ -104,6 +104,8 @@ def _question_fields(p: QuestionIn) -> dict:
         language=None,
         starter_code=None,
         test_cases=None,
+        correct_reason=p.correct_reason,       # ADD
+        incorrect_reason=p.incorrect_reason,
     )
     if p.question_type == "multiple_choice":
         f["options"] = [
@@ -139,6 +141,8 @@ def question_out(q: AssignmentQuestion, reveal: bool) -> QuestionOut:
         ]
         out.multiple_answers = sum(1 for o in q.options if o["is_correct"]) > 1
     if reveal:
+        out.correct_reason = q.correct_reason        # ADD
+        out.incorrect_reason = q.incorrect_reason
         if q.question_type == "true_false":
             out.correct_answer = q.correct_answer
         elif q.question_type == "text":
@@ -221,6 +225,7 @@ def _close_attempt(db: Session, attempt: AssignmentAttempt, answers: dict, timed
                 max_score=q.score,
                 is_correct=correct,
                 needs_review=review,
+                reason=_reason(q, correct),
             ).model_dump(by_alias=False)
         )
     attempt.answers = {str(k): v for k, v in answers.items()}
@@ -447,6 +452,7 @@ def grade_attempt(
             )
         r["score"] = g.score
         r["is_correct"] = g.score >= q.score
+        r["reason"] = _reason(q, r["is_correct"]) 
         r["needs_review"] = False
         r["feedback"] = g.feedback
     attempt.results = results  # reassign so SQLAlchemy sees the JSON change
@@ -567,3 +573,66 @@ def my_attempts(
     for r in rows:
         _expire_if_needed(db, r)
     return ApiResponse(data=[AttemptOut.model_validate(r) for r in rows])
+
+
+from pydantic import ValidationError
+from app.assignments_schemas import (
+    CodingQuestionIn,
+    MultipleChoiceQuestionIn,
+    TextQuestionIn,
+    TrueFalseQuestionIn,
+)
+
+def _reason(q: AssignmentQuestion, is_correct: bool | None) -> str | None:
+    """Correct -> correct_reason, wrong -> incorrect_reason, waiting for teacher -> None."""
+    if is_correct is None:
+        return None
+    return q.correct_reason if is_correct else q.incorrect_reason
+
+
+def _create_question(db: Session, assignment_id: int, body, user: User):
+    try:
+        payload = body.to_question()
+    except ValidationError as exc:
+        msg = exc.errors()[0]["msg"].removeprefix("Value error, ")
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, msg)
+
+    a = _teacher_assignment(db, assignment_id, user)
+    _require_unlocked(db, a.id)
+    pos = payload.position or _next_position(db, a.id)
+    q = AssignmentQuestion(assignment_id=a.id, position=pos, **_question_fields(payload))
+    db.add(q)
+    db.commit()
+    return ApiResponse(message="Question added.", data=question_out(q, reveal=True))
+
+
+@router.post("/assignments/{assignment_id}/questions/multiple-choice",
+             response_model=ApiResponse[QuestionOut], status_code=status.HTTP_201_CREATED)
+def add_multiple_choice(assignment_id: int, payload: MultipleChoiceQuestionIn,
+                        db: Session = Depends(get_db),
+                        user: User = Depends(require_role("teacher"))):
+    return _create_question(db, assignment_id, payload, user)
+
+
+@router.post("/assignments/{assignment_id}/questions/true-false",
+             response_model=ApiResponse[QuestionOut], status_code=status.HTTP_201_CREATED)
+def add_true_false(assignment_id: int, payload: TrueFalseQuestionIn,
+                   db: Session = Depends(get_db),
+                   user: User = Depends(require_role("teacher"))):
+    return _create_question(db, assignment_id, payload, user)
+
+
+@router.post("/assignments/{assignment_id}/questions/text",
+             response_model=ApiResponse[QuestionOut], status_code=status.HTTP_201_CREATED)
+def add_text_question(assignment_id: int, payload: TextQuestionIn,
+                      db: Session = Depends(get_db),
+                      user: User = Depends(require_role("teacher"))):
+    return _create_question(db, assignment_id, payload, user)
+
+
+@router.post("/assignments/{assignment_id}/questions/coding",
+             response_model=ApiResponse[QuestionOut], status_code=status.HTTP_201_CREATED)
+def add_coding_question(assignment_id: int, payload: CodingQuestionIn,
+                        db: Session = Depends(get_db),
+                        user: User = Depends(require_role("teacher"))):
+    return _create_question(db, assignment_id, payload, user)

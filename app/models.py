@@ -458,3 +458,24 @@ class Enrollment(Base):
 
     course: Mapped[Course] = relationship(back_populates="enrollments")
     student: Mapped[User] = relationship(foreign_keys=[student_id])
+
+
+class ContentProgress(Base):
+    """One row = one student has finished one lesson/video/document."""
+
+    __tablename__ = "content_progress"
+    __table_args__ = (
+        UniqueConstraint("student_id", "content_id", name="uq_content_progress_student_content"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    student_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    content_id: Mapped[int] = mapped_column(
+        ForeignKey("module_contents.id", ondelete="CASCADE"), index=True
+    )
+    course_id: Mapped[int] = mapped_column(
+        ForeignKey("courses.id", ondelete="CASCADE"), index=True
+    )
+    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

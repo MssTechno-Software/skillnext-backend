@@ -106,7 +106,8 @@ class AssignmentQuestion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     assignment: Mapped[Assignment] = relationship(back_populates="questions")
-
+    correct_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    incorrect_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 class AssignmentAttempt(Base):
     """One try by one student. Created on /start, closed on /submit (or when time runs out)."""

@@ -64,6 +64,8 @@ class QuestionIn(CamelModel):
     language: str | None = Field(default=None, max_length=30)
     starter_code: str | None = None
     test_cases: list[TestCase] | None = None
+    correct_reason: str | None = Field(default=None, max_length=2000)
+    incorrect_reason: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
     def _check_by_type(self):
@@ -133,6 +135,8 @@ class QuestionOut(CamelModel):
     # teacher only
     correct_answer: bool | None = None
     accepted_answers: list[str] | None = None
+    correct_reason: str | None = None
+    incorrect_reason: str | None = None
     case_sensitive: bool | None = None
     test_cases: list[TestCase] | None = None
 
@@ -164,6 +168,7 @@ class QuestionResult(CamelModel):
     max_score: float
     is_correct: bool | None = None  # None = waiting for teacher (coding)
     needs_review: bool = False
+    reason: str | None = None
     feedback: str | None = None
 
 
@@ -200,3 +205,42 @@ class AttemptReviewOut(AttemptWithStudent):
     """Teacher view of one attempt: includes what the student answered."""
 
     answers: dict | None = None
+
+
+class _TypedQuestionBase(CamelModel):
+    text: str = Field(min_length=1)
+    score: float = Field(gt=0, le=1000, description="Marks for this question")
+    position: int | None = Field(default=None, ge=1)
+    correct_reason: str | None = Field(default=None, max_length=2000)
+    incorrect_reason: str | None = Field(default=None, max_length=2000)
+
+
+class MultipleChoiceQuestionIn(_TypedQuestionBase):
+    options: list[OptionIn]
+
+    def to_question(self) -> QuestionIn:
+        return QuestionIn(question_type="multiple_choice", **self.model_dump())
+
+
+class TrueFalseQuestionIn(_TypedQuestionBase):
+    correct_answer: bool
+
+    def to_question(self) -> QuestionIn:
+        return QuestionIn(question_type="true_false", **self.model_dump())
+
+
+class TextQuestionIn(_TypedQuestionBase):
+    accepted_answers: list[str]
+    case_sensitive: bool = False
+
+    def to_question(self) -> QuestionIn:
+        return QuestionIn(question_type="text", **self.model_dump())
+
+
+class CodingQuestionIn(_TypedQuestionBase):
+    language: str = Field(max_length=30)
+    starter_code: str | None = None
+    test_cases: list[TestCase] | None = None
+
+    def to_question(self) -> QuestionIn:
+        return QuestionIn(question_type="coding", **self.model_dump())

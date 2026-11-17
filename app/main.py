@@ -11,6 +11,7 @@ from app.routers import auth, categories, course_content, courses, pages
 from app.routers import module_videos
 from app.routers import enrollments
 from app.routers import assignments
+from app.routers import student_assessments
 import app.assignment_models 
 
 Base.metadata.create_all(bind=engine)
@@ -38,7 +39,7 @@ app.include_router(course_content.router)
 app.include_router(module_videos.router)
 app.include_router(enrollments.router)
 app.include_router(assignments.router)
-
+app.include_router(student_assessments.router)
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):

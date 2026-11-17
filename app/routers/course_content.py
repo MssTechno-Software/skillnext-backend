@@ -11,6 +11,7 @@ from app.models import Course, CourseModule, ModuleContent, User
 from app.routers.courses import _get_or_404 as get_course_or_404
 from app.routers.courses import _require_owner
 from pydantic import Field
+# from app.models import Course, CourseModule, Enrollment, ModuleContent, User, ContentProgress
 from sqlalchemy.exc import IntegrityError
 from app.models import Course, CourseModule, Enrollment, ModuleContent, User
 from app.schemas import CamelModel, MyCourseOut  # add to your existing schemas import
@@ -489,25 +490,25 @@ from app.schemas import ApiResponse, CamelModel, CourseOut  # keep your other sc
 
 
 # ================================================== PROGRESS / MY LEARNINGS
-class ContentProgress(Base):
-    """A student marked one content item as completed (one row per student per item)."""
+# class ContentProgress(Base):
+#     """A student marked one content item as completed (one row per student per item)."""
 
-    __tablename__ = "content_progress"
-    __table_args__ = (
-        UniqueConstraint("student_id", "content_id", name="uq_content_progress_student_content"),
-    )
+#     __tablename__ = "content_progress"
+#     __table_args__ = (
+#         UniqueConstraint("student_id", "content_id", name="uq_content_progress_student_content"),
+#     )
 
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    student_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True
-    )
-    content_id: Mapped[int] = mapped_column(
-        ForeignKey("module_contents.id", ondelete="CASCADE"), index=True
-    )
-    course_id: Mapped[int] = mapped_column(
-        ForeignKey("courses.id", ondelete="CASCADE"), index=True
-    )
-    completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+#     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+#     student_id: Mapped[int] = mapped_column(
+#         ForeignKey("users.id", ondelete="CASCADE"), index=True
+#     )
+#     content_id: Mapped[int] = mapped_column(
+#         ForeignKey("module_contents.id", ondelete="CASCADE"), index=True
+#     )
+#     course_id: Mapped[int] = mapped_column(
+#         ForeignKey("courses.id", ondelete="CASCADE"), index=True
+#     )
+#     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class CourseProgress(CamelModel):

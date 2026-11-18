@@ -11,7 +11,7 @@ from app.models import Course, CourseModule, ModuleContent, User
 from app.routers.courses import _get_or_404 as get_course_or_404
 from app.routers.courses import _require_owner
 from pydantic import Field
-# from app.models import Course, CourseModule, Enrollment, ModuleContent, User, ContentProgress
+from app.models import Course, CourseModule, Enrollment, ModuleContent, User, ContentProgress
 from sqlalchemy.exc import IntegrityError
 from app.models import Course, CourseModule, Enrollment, ModuleContent, User
 from app.schemas import CamelModel, MyCourseOut  # add to your existing schemas import

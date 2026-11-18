@@ -1,3 +1,4 @@
+
 # import re
 # from typing import Annotated, Literal, Union
 # import re
@@ -330,6 +331,9 @@
 #     body: str | None
 #     blocks: list[Block] | None = None
 #     url: str | None
+#     file_name: str | None = None
+#     download_url: str | None = None
+#     preview_url: str | None = None
 #     position: int
 #     visible: bool
 #     created_at: datetime
@@ -343,6 +347,106 @@
 # class CourseContentData(CamelModel):
 #     course: CourseOut
 #     modules: list[ModuleWithContent]
+
+
+# # ============================== Enrollment ==============================
+
+# class EnrollRequest(CamelModel):
+#     """Send student ids, emails, or both (max 200 in total)."""
+
+#     student_ids: list[int] = Field(default_factory=list, max_length=200)
+#     emails: list[EmailStr] = Field(default_factory=list, max_length=200)
+
+#     @model_validator(mode="after")
+#     def at_least_one(self):
+#         if not self.student_ids and not self.emails:
+#             raise ValueError("Send at least one studentId or email")
+#         return self
+
+
+# class StudentBrief(CamelModel):
+#     model_config = ConfigDict(from_attributes=True)
+
+#     id: int
+#     first_name: str
+#     last_name: str
+#     email: str
+#     institution: str
+
+
+# class EnrollmentOut(CamelModel):
+#     model_config = ConfigDict(from_attributes=True)
+
+#     id: int
+#     course_id: int
+#     student: StudentBrief
+#     enrolled_at: datetime
+
+
+# class EnrollSkipped(CamelModel):
+#     student_id: int | None = None
+#     email: str | None = None
+#     reason: str
+
+
+# class EnrollResult(CamelModel):
+#     enrolled: list[EnrollmentOut]
+#     already_enrolled: list[StudentBrief]
+#     skipped: list[EnrollSkipped]
+
+
+# class EnrollmentListData(CamelModel):
+#     items: list[EnrollmentOut]
+#     total: int
+#     page: int
+#     page_size: int
+
+
+# class StudentListData(CamelModel):
+#     items: list[StudentBrief]
+#     total: int
+#     page: int
+#     page_size: int
+
+
+# class MyCourseOut(CamelModel):
+#     model_config = ConfigDict(from_attributes=True)
+
+#     course: CourseOut
+#     enrolled_at: datetime
+
+
+# from pydantic import BaseModel, ConfigDict
+
+
+# class ContentSummary(BaseModel):
+#     model_config = ConfigDict(from_attributes=True)
+
+#     id: int
+#     title: str
+#     content_type: str
+#     position: int | None = None
+#     visible: bool = True
+#     url: str | None = None
+#     download_url: str | None = None
+#     preview_url: str | None = None
+
+
+# class ModuleOverview(ModuleOut):
+#     total_contents: int = 0
+#     contents_by_type: dict[str, int] = {}
+#     contents: list[ContentSummary] = []
+
+
+# class CourseOverviewData(BaseModel):
+#     course: CourseOut
+#     total_modules: int
+#     total_contents: int
+#     contents_by_type: dict[str, int]
+#     hidden_modules: int | None = None   # teacher only
+#     hidden_contents: int | None = None  # teacher only
+#     modules: list[ModuleOverview]
+
 
 import re
 from typing import Annotated, Literal, Union
@@ -462,6 +566,31 @@ class SetPasswordRequest(CamelModel):
 
 class ResendVerificationRequest(CamelModel):
     email: EmailStr
+
+
+class ForgotPasswordRequest(CamelModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(CamelModel):
+    token: str = Field(min_length=10)
+    password: str = Field(min_length=8, max_length=72)
+    confirm_password: str
+
+    @field_validator("password")
+    @classmethod
+    def strong_password(cls, v: str) -> str:
+        if len(v.encode()) > 72:
+            raise ValueError("Password is too long")
+        if not re.search(r"[A-Za-z]", v) or not re.search(r"\d", v):
+            raise ValueError("Password must contain at least one letter and one number")
+        return v
+
+    @model_validator(mode="after")
+    def passwords_match(self):
+        if self.password != self.confirm_password:
+            raise ValueError("Passwords do not match")
+        return self
 
 
 class LoginRequest(CamelModel):

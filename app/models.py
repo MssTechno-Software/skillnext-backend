@@ -3,7 +3,7 @@
 # from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String
 # from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-# from sqlalchemy import JSON
+# from sqlalchemy import JSON, UniqueConstraint
 # from sqlalchemy.dialects.postgresql import JSONB
 
 # from app.database import Base
@@ -158,6 +158,9 @@
 #         cascade="all, delete-orphan",
 #         order_by="CourseModule.position, CourseModule.id",
 #     )
+#     enrollments: Mapped[list["Enrollment"]] = relationship(
+#         back_populates="course", cascade="all, delete-orphan"
+#     )
 
 # class CourseModule(Base):
 #     """A module (Moodle 'section' / topic) inside a course, e.g. 'Week 1 - Basics'."""
@@ -205,6 +208,8 @@
 #         JSON().with_variant(JSONB(), "postgresql"), nullable=True
 #     )
 #     url: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+#     drive_file_id: Mapped[str | None] = mapped_column(String(100), nullable=True)  # set for Drive uploads
+#     file_name: Mapped[str | None] = mapped_column(String(255), nullable=True)  # original uploaded name
 #     position: Mapped[int] = mapped_column(Integer, default=1)
 #     visible: Mapped[bool] = mapped_column(Boolean, default=True)
 #     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -213,6 +218,51 @@
 #     )
 
 #     module: Mapped[CourseModule] = relationship(back_populates="contents")
+
+
+# class Enrollment(Base):
+#     """A student enrolled in a course (one row per student per course)."""
+
+#     __tablename__ = "enrollments"
+#     __table_args__ = (
+#         UniqueConstraint("course_id", "student_id", name="uq_enrollments_course_student"),
+#     )
+
+#     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+#     course_id: Mapped[int] = mapped_column(
+#         ForeignKey("courses.id", ondelete="CASCADE"), index=True
+#     )
+#     student_id: Mapped[int] = mapped_column(
+#         ForeignKey("users.id", ondelete="CASCADE"), index=True
+#     )
+#     enrolled_by: Mapped[int | None] = mapped_column(
+#         ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+#     )
+#     enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+#     course: Mapped[Course] = relationship(back_populates="enrollments")
+#     student: Mapped[User] = relationship(foreign_keys=[student_id])
+
+
+# class ContentProgress(Base):
+#     """One row = one student has finished one lesson/video/document."""
+
+#     __tablename__ = "content_progress"
+#     __table_args__ = (
+#         UniqueConstraint("student_id", "content_id", name="uq_content_progress_student_content"),
+#     )
+
+#     id: Mapped[int] = mapped_column(Integer, primary_key=True)
+#     student_id: Mapped[int] = mapped_column(
+#         ForeignKey("users.id", ondelete="CASCADE"), index=True
+#     )
+#     content_id: Mapped[int] = mapped_column(
+#         ForeignKey("module_contents.id", ondelete="CASCADE"), index=True
+#     )
+#     course_id: Mapped[int] = mapped_column(
+#         ForeignKey("courses.id", ondelete="CASCADE"), index=True
+#     )
+#     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 from datetime import datetime, timezone
 
@@ -303,6 +353,18 @@ class TeacherProfile(Base):
 
 class EmailVerificationToken(Base):
     __tablename__ = "email_verification_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class PasswordResetToken(Base):
+    __tablename__ = "password_reset_tokens"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(

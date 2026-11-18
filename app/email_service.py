@@ -84,7 +84,7 @@ def _send(to_email: str, msg: EmailMessage) -> None:
 #         f"This link expires in {settings.VERIFICATION_TOKEN_HOURS} hours.\n"
 #         f"If you didn't sign up, you can ignore this email."
 #     )
-# #     _send(to_email, msg)
+#     _send(to_email, msg)
 
 def send_verification_email(to_email, first_name, token, forgot: bool = False):
     link = f"{settings.FRONTEND_URL.rstrip('/')}{settings.FRONTEND_SET_PASSWORD_PATH}?token={token}"
@@ -112,8 +112,8 @@ def send_verification_email(to_email, first_name, token, forgot: bool = False):
         f"This link expires in {settings.VERIFICATION_TOKEN_HOURS} hours.\n"
         f"If you didn't request this, you can ignore this email."
     )
-    # ...keep your existing smtplib send block unchanged
-
+    _send(to_email, msg)
+    
 def send_password_reset_email(to_email: str, first_name: str, token: str) -> None:
     link = _frontend_link(settings.FRONTEND_RESET_PASSWORD_PATH, token)
 

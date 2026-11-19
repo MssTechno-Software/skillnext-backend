@@ -562,3 +562,346 @@ def restart_module(
             assessments_reset=len(failed),
         ),
     )
+
+from sqlalchemy.orm import Session, selectinload
+
+# ================================================================ STUDENT: my analytics page
+class NextStepOut(CamelModel):
+    step: int  # position of the topic in the course (1-based)
+    type: str  # "lesson" | "final_assessment"
+    course_id: int
+    course_name: str
+    module_id: int | None
+    assignment_id: int | None
+    title: str
+    question_count: int | None  # questions in that topic's / final assessment
+
+
+class RoadmapNodeOut(CamelModel):
+    kind: str  # "topic" | "final"
+    module_id: int | None
+    assignment_id: int | None
+    title: str
+    order: int
+    state: str  # "completed" | "current" | "locked"
+
+
+class MarksPart(CamelModel):
+    marks: float
+    out_of: float
+
+
+class MarksBreakdownOut(CamelModel):
+    topic_quizzes: MarksPart
+    final_assessment: MarksPart
+    overall_marks: float  # out of 100
+
+
+class ChapterPerformanceOut(CamelModel):
+    combined_marks: float
+    out_of: float
+    overall_percentage: float
+    pass_mark: float | None  # pass percentage of the final assessment
+    is_passed: bool
+
+
+class QuizTopicOut(CamelModel):
+    module_id: int
+    name: str
+    best_percentage: float | None  # None = no graded attempt yet
+    passed: bool | None
+
+
+class AttemptTrackerOut(CamelModel):
+    assignment_id: int
+    unlocked: bool
+    max_attempts: int
+    attempts_used: int
+    attempts_remaining: int
+    best_percentage: float | None
+    passed: bool | None
+    pending_review: bool
+
+
+class ChapterOut(CamelModel):
+    chapter_no: int
+    course_id: int
+    course_name: str
+    short_name: str
+    category_name: str
+    status: str  # "not_started" | "in_progress" | "completed"
+    topics_completed: int
+    total_topics: int
+    next_topic_name: str | None
+    performance: ChapterPerformanceOut
+    roadmap: list[RoadmapNodeOut]
+    next_step: NextStepOut | None
+    marks_breakdown: MarksBreakdownOut
+    quiz_performance: list[QuizTopicOut]
+    attempt_tracker: AttemptTrackerOut | None  # None if the course has no final assessment
+
+
+class AnalyticsSummaryOut(CamelModel):
+    enrolled_courses: int
+    topics_completed: int
+    total_topics: int
+    overall_percentage: float  # topics completed / all topics
+    assessment_attempts: int  # submitted + graded attempts (module quizzes + finals)
+    courses_passed: int  # final assessment passed
+    average_assessment_score: float  # average of the best graded % of each assessment
+
+
+class MyAnalyticsOut(CamelModel):
+    summary: AnalyticsSummaryOut
+    next_step: NextStepOut | None  # "Your next step" card at the top
+    chapters: list[ChapterOut]
+
+
+@router.get("/analytics/me", response_model=ApiResponse[MyAnalyticsOut])
+def my_analytics(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Everything the My Analytics page shows, in one call (student only)."""
+    enrollments = db.scalars(
+        select(Enrollment)
+        .join(Course, Course.id == Enrollment.course_id)
+        .join(Category, Category.id == Course.category_id)
+        .where(
+            Enrollment.student_id == user.id,
+            Course.visible.is_(True),
+            Category.visible.is_(True),
+        )
+        .options(
+            selectinload(Enrollment.course).selectinload(Course.category),
+            selectinload(Enrollment.course)
+            .selectinload(Course.modules)
+            .selectinload(CourseModule.contents),
+        )
+        .order_by(Enrollment.id)  # chapter 01, 02, ... in enrollment order
+    ).all()
+
+    done_ids: set[int] = set()
+    if enrollments:
+        done_ids = set(
+            db.scalars(
+                select(ContentProgress.content_id).where(
+                    ContentProgress.student_id == user.id,
+                    ContentProgress.course_id.in_([e.course_id for e in enrollments]),
+                )
+            )
+        )
+
+    chapters: list[ChapterOut] = []
+    all_topics = all_topics_done = attempts_total = passed_courses = 0
+    best_scores: list[float] = []
+
+    for no, e in enumerate(enrollments, start=1):
+        course = e.course
+
+        # ---------- topics (visible modules that have visible content)
+        topics = []  # (module, finished_items, completed)
+        for m in course.modules:
+            if not m.visible:
+                continue
+            items = [c for c in m.contents if c.visible]
+            if items:
+                finished = sum(1 for c in items if c.id in done_ids)
+                topics.append((m, finished, finished == len(items)))
+        n_topics = len(topics)
+        n_done = sum(1 for _, _, ok in topics if ok)
+        all_topics += n_topics
+        all_topics_done += n_done
+        all_modules_done = bool(n_topics) and n_done == n_topics
+        current = next((m for m, _, ok in topics if not ok), None)
+
+        # ---------- assessments (best attempt of each)
+        rows = _visible_assignments(db, course.id)
+        attempts_by: dict[int, list[AssignmentAttempt]] = {}
+        best_by: dict[int, float | None] = {}
+        for a in rows:
+            attempts = _student_attempts(db, a.id, user.id)
+            attempts_by[a.id] = attempts
+            best_by[a.id] = _best_percentage(attempts)
+            attempts_total += sum(1 for t in attempts if t.status in ("submitted", "graded"))
+            if best_by[a.id] is not None:
+                best_scores.append(best_by[a.id])
+
+        final = next((a for a in rows if a.module_id is None), None)
+        module_rows: dict[int, list[Assignment]] = {}
+        for a in rows:
+            if a.module_id is not None:
+                module_rows.setdefault(a.module_id, []).append(a)
+
+        # same scoring rule as GET /courses/{id}/score/me
+        module_pcts = {
+            mid: sum(best_by[a.id] or 0.0 for a in lst) / len(lst)
+            for mid, lst in module_rows.items()
+        }
+        modules_pct = sum(module_pcts.values()) / len(module_pcts) if module_pcts else 0.0
+        final_pct = (best_by[final.id] or 0.0) if final else None
+        mw = MODULE_WEIGHT if module_pcts else 0.0
+        fw = FINAL_WEIGHT if final else 0.0
+        if mw + fw:
+            mw, fw = mw / (mw + fw) * 100, fw / (mw + fw) * 100
+        module_points = round(modules_pct * mw / 100, 2)
+        final_points = round((final_pct or 0.0) * fw / 100, 2)
+        total_points = round(module_points + final_points, 2)
+
+        # ---------- final assessment tracker
+        tracker = None
+        final_passed = False
+        if final:
+            f_attempts = attempts_by[final.id]
+            final_passed = any(t.passed for t in f_attempts if t.status == "graded")
+            tracker = AttemptTrackerOut(
+                assignment_id=final.id,
+                unlocked=all_modules_done,
+                max_attempts=final.max_attempts,
+                attempts_used=len(f_attempts),
+                attempts_remaining=max(0, final.max_attempts - len(f_attempts)),
+                best_percentage=best_by[final.id],
+                passed=final_passed if f_attempts else None,
+                pending_review=any(t.status == "submitted" for t in f_attempts),
+            )
+        passed_courses += int(final_passed)
+
+        # ---------- roadmap nodes
+        nodes: list[RoadmapNodeOut] = []
+        for i, (m, _, ok) in enumerate(topics, start=1):
+            nodes.append(
+                RoadmapNodeOut(
+                    kind="topic",
+                    module_id=m.id,
+                    assignment_id=None,
+                    title=m.name,
+                    order=i,
+                    state="completed" if ok else ("current" if m is current else "locked"),
+                )
+            )
+        if final:
+            nodes.append(
+                RoadmapNodeOut(
+                    kind="final",
+                    module_id=None,
+                    assignment_id=final.id,
+                    title=final.title,
+                    order=n_topics + 1,
+                    state="completed" if final_passed else ("current" if all_modules_done else "locked"),
+                )
+            )
+
+        # ---------- next step for this chapter
+        next_step = None
+        if current is not None:
+            next_step = NextStepOut(
+                step=next(i for i, (m, _, _) in enumerate(topics, start=1) if m is current),
+                type="lesson",
+                course_id=course.id,
+                course_name=course.full_name,
+                module_id=current.id,
+                assignment_id=None,
+                title=current.name,
+                question_count=sum(a.question_count for a in module_rows.get(current.id, [])) or None,
+            )
+        elif final and not final_passed and tracker and tracker.attempts_remaining > 0:
+            next_step = NextStepOut(
+                step=n_topics + 1,
+                type="final_assessment",
+                course_id=course.id,
+                course_name=course.full_name,
+                module_id=None,
+                assignment_id=final.id,
+                title=final.title,
+                question_count=final.question_count,
+            )
+
+        # ---------- status
+        started = any(c.id in done_ids for m, _, _ in topics for c in m.contents) or any(
+            attempts_by.values()
+        )
+        if final_passed or (all_modules_done and final is None):
+            status_ = "completed"
+        elif started:
+            status_ = "in_progress"
+        else:
+            status_ = "not_started"
+
+        chapters.append(
+            ChapterOut(
+                chapter_no=no,
+                course_id=course.id,
+                course_name=course.full_name,
+                short_name=course.short_name,
+                category_name=course.category.name,
+                status=status_,
+                topics_completed=n_done,
+                total_topics=n_topics,
+                next_topic_name=current.name if current else None,
+                performance=ChapterPerformanceOut(
+                    combined_marks=total_points,
+                    out_of=100.0,
+                    overall_percentage=total_points,
+                    pass_mark=final.pass_percentage if final else None,
+                    is_passed=final_passed,
+                ),
+                roadmap=nodes,
+                next_step=next_step,
+                marks_breakdown=MarksBreakdownOut(
+                    topic_quizzes=MarksPart(marks=module_points, out_of=round(mw, 2)),
+                    final_assessment=MarksPart(marks=final_points, out_of=round(fw, 2)),
+                    overall_marks=total_points,
+                ),
+                quiz_performance=[
+                    QuizTopicOut(
+                        module_id=m.id,
+                        name=m.name,
+                        best_percentage=(
+                            round(
+                                sum(best_by[a.id] or 0.0 for a in module_rows[m.id])
+                                / len(module_rows[m.id]),
+                                2,
+                            )
+                            if m.id in module_rows
+                            and any(best_by[a.id] is not None for a in module_rows[m.id])
+                            else None
+                        ),
+                        passed=(
+                            all(
+                                any(t.passed for t in attempts_by[a.id] if t.status == "graded")
+                                for a in module_rows[m.id]
+                            )
+                            if m.id in module_rows and any(attempts_by[a.id] for a in module_rows[m.id])
+                            else None
+                        ),
+                    )
+                    for m, _, _ in topics
+                ],
+                attempt_tracker=tracker,
+            )
+        )
+
+    # top card: first chapter in progress that has a next step, else first chapter that has one
+    pick = next(
+        (c for c in chapters if c.status == "in_progress" and c.next_step), None
+    ) or next((c for c in chapters if c.next_step), None)
+
+    return ApiResponse(
+        data=MyAnalyticsOut(
+            summary=AnalyticsSummaryOut(
+                enrolled_courses=len(enrollments),
+                topics_completed=all_topics_done,
+                total_topics=all_topics,
+                overall_percentage=round(all_topics_done / all_topics * 100, 2) if all_topics else 0.0,
+                assessment_attempts=attempts_total,
+                courses_passed=passed_courses,
+                average_assessment_score=(
+                    round(sum(best_scores) / len(best_scores), 2) if best_scores else 0.0
+                ),
+            ),
+            next_step=pick.next_step if pick else None,
+            chapters=chapters,
+        )
+    )
+
+

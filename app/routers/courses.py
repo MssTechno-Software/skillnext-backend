@@ -32,12 +32,17 @@ def _get_or_404(db: Session, course_id: int, user: User) -> Course:
     return course
 
 
-def _require_owner(course: Course, user: User):
-    if course.created_by != user.id:
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "Only the teacher who created this course can change it."
-        )
+# def _require_owner(course: Course, user: User):
+#     if course.created_by != user.id:
+#         raise HTTPException(
+#             status.HTTP_403_FORBIDDEN, "Only the teacher who created this course can change it."
+#         )
 
+def _require_owner(course: Course, user: User):
+    if user.role != "teacher":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "Only teachers can change this course."
+        )
 
 def _check_category(db: Session, category_id: int):
     if db.get(Category, category_id) is None:

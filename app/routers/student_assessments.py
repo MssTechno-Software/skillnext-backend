@@ -31,6 +31,7 @@ from app.routers.assignments import _expire_if_needed, _require_enrolled, start_
 from app.routers.courses import _get_or_404 as get_course_or_404
 from app.routers.courses import _require_owner
 from app.schemas import ApiResponse, CamelModel
+from sqlalchemy import delete, select
 
 router = APIRouter(prefix="/api", tags=["assessments"])
 
@@ -77,6 +78,15 @@ class CourseScoreOut(CamelModel):
     pending_review: bool  # score can still go up once the teacher grades coding answers
     modules: list[ModuleScoreOut]
 
+
+class AssessmentCard(AssignmentOut):
+    kind: str  # "module" | "final"
+    attempts_used: int
+    attempts_left: int
+    best_percentage: float | None
+    passed: bool | None
+    pending_review: bool  # a coding answer is still waiting for the teacher
+    can_restart: bool  # all attempts used and none passed -> student may restart the module
 
 # ===================================================================== helpers
 def _module_completion(db: Session, student_id: int, course: Course) -> dict[int, bool]:
@@ -144,6 +154,17 @@ def _best_percentage(attempts: list[AssignmentAttempt]) -> float | None:
     graded = [a.percentage for a in attempts if a.status == "graded" and a.percentage is not None]
     return max(graded) if graded else None
 
+def _failed_all_attempts(a: Assignment, attempts: list[AssignmentAttempt]) -> bool:
+    """True when every attempt is used, all are graded and none passed.
+
+    An attempt that is still running or waiting for the teacher to grade a
+    coding answer is not a failure yet, so it blocks the restart.
+    """
+    return (
+        len(attempts) >= a.max_attempts
+        and all(t.status == "graded" for t in attempts)
+        and not any(t.passed for t in attempts)
+    )
 
 def _card(db: Session, a: Assignment, student_id: int) -> AssessmentCard:
     attempts = _student_attempts(db, a.id, student_id)
@@ -156,6 +177,7 @@ def _card(db: Session, a: Assignment, student_id: int) -> AssessmentCard:
         best_percentage=_best_percentage(attempts),
         passed=any(t.passed for t in attempts if t.status == "graded") if used else None,
         pending_review=any(t.status == "submitted" for t in attempts),
+        can_restart=a.module_id is not None and _failed_all_attempts(a, attempts),
     )
 
 
@@ -479,4 +501,64 @@ def student_dashboard(
             average_assessment_score=average,
             learnings=learnings,
         )
+    )
+
+
+class ModuleRestartOut(CamelModel):
+    module_id: int
+    contents_reset: int  # content items un-marked, the module is "not completed" again
+    assessments_reset: int  # assessments whose failed attempts were cleared
+
+
+@router.post(
+    "/modules/{module_id}/restart",
+    response_model=ApiResponse[ModuleRestartOut],
+)
+def restart_module(
+    module_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Restart a module after failing all attempts of its assessment."""
+    module = db.get(CourseModule, module_id)
+    if module is None or not module.visible:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Module not found.")
+    course = _visible_course(db, module.course_id, user)
+
+    failed = [
+        a
+        for a in _visible_assignments(db, course.id)
+        if a.module_id == module.id
+        and _failed_all_attempts(a, _student_attempts(db, a.id, user.id))
+    ]
+    if not failed:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "You can restart a module only after using all attempts of its assessment without passing.",
+        )
+
+    content_ids = [c.id for c in module.contents]
+    contents_reset = 0
+    if content_ids:
+        contents_reset = db.execute(
+            delete(ContentProgress).where(
+                ContentProgress.student_id == user.id,
+                ContentProgress.content_id.in_(content_ids),
+            )
+        ).rowcount
+    db.execute(
+        delete(AssignmentAttempt).where(
+            AssignmentAttempt.student_id == user.id,
+            AssignmentAttempt.assignment_id.in_([a.id for a in failed]),
+        )
+    )
+    db.commit()
+
+    return ApiResponse(
+        message="Module restarted. Read it again and mark it complete to unlock the assessment.",
+        data=ModuleRestartOut(
+            module_id=module.id,
+            contents_reset=contents_reset or 0,
+            assessments_reset=len(failed),
+        ),
     )

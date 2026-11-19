@@ -158,6 +158,11 @@ class AssignmentOut(CamelModel):
     created_at: datetime
 
 
+class BulkQuestionsIn(CamelModel):
+    """Many questions of any type in one request (each item has the same shape as QuestionIn)."""
+
+    questions: list[QuestionIn] = Field(min_length=1, max_length=100)
+    
 class AssignmentDetail(AssignmentOut):
     questions: list[QuestionOut]
 

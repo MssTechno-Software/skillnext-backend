@@ -18,6 +18,7 @@ from app.assignments_schemas import (
     OptionOut,
     QuestionIn,
     QuestionOut,
+    BulkQuestionsIn,
     QuestionResult,
     SubmitRequest,
     TestCase,
@@ -636,3 +637,39 @@ def add_coding_question(assignment_id: int, payload: CodingQuestionIn,
                         db: Session = Depends(get_db),
                         user: User = Depends(require_role("teacher"))):
     return _create_question(db, assignment_id, payload, user)
+
+
+@router.post(
+    "/assignments/{assignment_id}/questions/bulk",
+    response_model=ApiResponse[list[QuestionOut]],
+    status_code=status.HTTP_201_CREATED,
+)
+def add_questions_bulk(
+    assignment_id: int,
+    payload: BulkQuestionsIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("teacher")),
+):
+    """Add many questions (multiple_choice / true_false / text / coding, mixed) in one call.
+
+    All-or-nothing: every question is validated first (a bad one is reported as
+    questions.<index>... with a 422) and nothing is saved unless all of them are valid.
+    Questions without `position` are appended after the existing ones, in the order sent.
+    """
+    a = _teacher_assignment(db, assignment_id, user)
+    _require_unlocked(db, a.id)
+
+    next_pos = _next_position(db, a.id)
+    created: list[AssignmentQuestion] = []
+    for item in payload.questions:
+        pos = item.position or next_pos
+        next_pos = max(next_pos, pos) + 1
+        created.append(
+            AssignmentQuestion(assignment_id=a.id, position=pos, **_question_fields(item))
+        )
+    db.add_all(created)
+    db.commit()
+    return ApiResponse(
+        message=f"{len(created)} questions added.",
+        data=[question_out(q, reveal=True) for q in created],
+    )

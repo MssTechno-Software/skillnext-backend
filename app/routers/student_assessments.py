@@ -905,3 +905,149 @@ def my_analytics(
     )
 
 
+
+# ================================================================ STUDENT: learning path (one course)
+class LearningPathCourseOut(CamelModel):
+    id: int
+    full_name: str
+    short_name: str
+    summary: str | None
+    category_name: str
+
+
+class LearningPathProgressOut(CamelModel):
+    total_modules: int
+    read_modules: int
+    passed_modules: int
+    remaining_modules: int
+    completion_percentage: int
+    final_assessment_unlocked: bool
+
+
+class LearningPathModuleOut(CamelModel):
+    id: int
+    name: str
+    summary: str | None
+    position: int
+    contents_count: int
+    is_read: bool
+    assessment_passed: bool
+    is_unlocked: bool
+    status: str  # "PASSED" | "READ" | "AVAILABLE" | "LOCKED"
+
+
+class LearningPathFinalOut(CamelModel):
+    id: int
+    title: str
+    is_unlocked: bool
+    status: str  # "PASSED" | "AVAILABLE" | "LOCKED"
+
+
+class LearningPathOut(CamelModel):
+    course: LearningPathCourseOut
+    progress: LearningPathProgressOut
+    modules: list[LearningPathModuleOut]
+    final_assessment: LearningPathFinalOut | None  # None if the course has no final assessment
+
+
+@router.get(
+    "/courses/{course_id}/learning-path/me",
+    response_model=ApiResponse[LearningPathOut],
+)
+def my_learning_path(
+    course_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """Learning path of one enrolled course for the logged-in student.
+
+    read   = every visible content item of the module is finished
+    passed = read AND every assessment of that module is passed
+             (a module without an assessment is passed once it is read)
+    A module is unlocked when it is the first one, or the previous one is passed.
+    The final assessment unlocks when every module is read (same rule as the start API).
+    """
+    course = _visible_course(db, course_id, user)
+    read_map = _module_completion(db, user.id, course)  # {module_id: read?}
+
+    rows = _visible_assignments(db, course.id)
+    attempts_by = {a.id: _student_attempts(db, a.id, user.id) for a in rows}
+
+    def _passed(a: Assignment) -> bool:
+        return any(t.passed for t in attempts_by[a.id] if t.status == "graded")
+
+    module_rows: dict[int, list[Assignment]] = {}
+    for a in rows:
+        if a.module_id is not None:
+            module_rows.setdefault(a.module_id, []).append(a)
+
+    modules: list[LearningPathModuleOut] = []
+    prev_passed = True  # the first module is always open
+    for m in course.modules:  # ordered by position, id
+        if m.id not in read_map:  # hidden or empty modules are not part of the path
+            continue
+        is_read = read_map[m.id]
+        mine = module_rows.get(m.id, [])
+        assessment_passed = all(_passed(a) for a in mine) if mine else is_read
+        passed = is_read and assessment_passed
+        unlocked = prev_passed
+        if passed:
+            status_ = "PASSED"
+        elif not unlocked:
+            status_ = "LOCKED"
+        elif is_read:
+            status_ = "READ"  # content finished, assessment still to pass
+        else:
+            status_ = "AVAILABLE"
+        modules.append(
+            LearningPathModuleOut(
+                id=m.id,
+                name=m.name,
+                summary=m.summary,
+                position=m.position,
+                contents_count=sum(1 for c in m.contents if c.visible),
+                is_read=is_read,
+                assessment_passed=assessment_passed,
+                is_unlocked=unlocked,
+                status=status_,
+            )
+        )
+        prev_passed = passed
+
+    total = len(modules)
+    read_count = sum(1 for m in modules if m.is_read)
+    passed_count = sum(1 for m in modules if m.status == "PASSED")
+    final_unlocked = bool(read_map) and all(read_map.values())
+
+    final = next((a for a in rows if a.module_id is None), None)
+    final_out = None
+    if final:
+        final_out = LearningPathFinalOut(
+            id=final.id,
+            title=final.title,
+            is_unlocked=final_unlocked,
+            status="PASSED" if _passed(final) else ("AVAILABLE" if final_unlocked else "LOCKED"),
+        )
+
+    return ApiResponse(
+        message="Learning path fetched successfully",
+        data=LearningPathOut(
+            course=LearningPathCourseOut(
+                id=course.id,
+                full_name=course.full_name,
+                short_name=course.short_name,
+                summary=course.summary,
+                category_name=course.category.name,
+            ),
+            progress=LearningPathProgressOut(
+                total_modules=total,
+                read_modules=read_count,
+                passed_modules=passed_count,
+                remaining_modules=total - passed_count,
+                completion_percentage=round(passed_count / total * 100) if total else 0,
+                final_assessment_unlocked=final_unlocked,
+            ),
+            modules=modules,
+            final_assessment=final_out,
+        ),
+    )

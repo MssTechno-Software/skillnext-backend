@@ -252,3 +252,46 @@ def my_courses(
         .order_by(Enrollment.enrolled_at.desc(), Enrollment.id.desc())
     ).all()
     return ApiResponse(data=[MyCourseOut.model_validate(e) for e in rows])
+
+from sqlalchemy import delete, func, or_, select
+from app.assignment_models import Assignment, AssignmentAttempt
+from app.models import Category, ContentProgress, Course, Enrollment, User
+
+# ================================================= LEAVE A COURSE (student)
+@router.delete("/enrollments/me/{course_id}")
+def leave_course(
+    course_id: int,
+    remove_progress: bool = Query(
+        False,
+        alias="removeProgress",
+        description="Also delete my lesson progress and assessment attempts for this course",
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("student")),
+):
+    """The logged-in student removes a course from his own enrolled courses."""
+    enrollment = db.scalar(
+        select(Enrollment).where(
+            Enrollment.course_id == course_id, Enrollment.student_id == user.id
+        )
+    )
+    if enrollment is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "You are not enrolled in this course.")
+
+    if remove_progress:
+        db.execute(
+            delete(ContentProgress).where(
+                ContentProgress.student_id == user.id, ContentProgress.course_id == course_id
+            )
+        )
+        db.execute(
+            delete(AssignmentAttempt).where(
+                AssignmentAttempt.student_id == user.id,
+                AssignmentAttempt.assignment_id.in_(
+                    select(Assignment.id).where(Assignment.course_id == course_id)
+                ),
+            )
+        )
+    db.delete(enrollment)
+    db.commit()
+    return {"success": True, "message": "You have left the course."}

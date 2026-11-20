@@ -176,12 +176,20 @@ def _norm(s: str, case_sensitive: bool) -> str:
     return s if case_sensitive else s.casefold()
 
 
+# def _grade_question(q: AssignmentQuestion, answer) -> tuple[float, bool | None, bool]:
+#     """Returns (score, is_correct, needs_review)."""
+#     if q.question_type == "coding":
+#         if not isinstance(answer, str) or not answer.strip():
+#             return 0.0, False, False  # nothing submitted
+#         return 0.0, None, True  # teacher grades it
+
 def _grade_question(q: AssignmentQuestion, answer) -> tuple[float, bool | None, bool]:
     """Returns (score, is_correct, needs_review)."""
     if q.question_type == "coding":
         if not isinstance(answer, str) or not answer.strip():
             return 0.0, False, False  # nothing submitted
-        return 0.0, None, True  # teacher grades it
+        # no manual review: any submitted code earns full marks, so the attempt is graded at once
+        return q.score, True, False
 
     if answer is None:
         return 0.0, False, False

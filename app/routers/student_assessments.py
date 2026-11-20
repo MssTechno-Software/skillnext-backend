@@ -396,6 +396,115 @@ def my_course_score(
     )
 
 # ================================================================ STUDENT: dashboard
+# class DashboardCourseOut(CamelModel):
+#     course_id: int
+#     full_name: str
+#     short_name: str
+#     enrolled_at: datetime
+#     total_modules: int
+#     modules_completed: int
+#     total_items: int
+#     items_completed: int
+#     completion_percentage: float  # completed content items / all content items
+#     is_completed: bool
+
+
+# class DashboardOut(CamelModel):
+#     enrolled_courses: int
+#     modules_completed: int
+#     assignments_completed: int
+#     average_assessment_score: float  # average of the best graded % of each assessment
+#     learnings: list[DashboardCourseOut]
+
+
+# @router.get("/dashboard/me", response_model=ApiResponse[DashboardOut])
+# def student_dashboard(
+#     db: Session = Depends(get_db),
+#     user: User = Depends(require_role("student")),
+# ):
+#     """Student dashboard: counts + the courses they enrolled in with completion %."""
+#     enrollments = db.scalars(
+#         select(Enrollment)
+#         .join(Course, Course.id == Enrollment.course_id)
+#         .join(Category, Category.id == Course.category_id)
+#         .where(
+#             Enrollment.student_id == user.id,
+#             Course.visible.is_(True),
+#             Category.visible.is_(True),
+#         )
+#         .order_by(Enrollment.enrolled_at.desc(), Enrollment.id.desc())
+#     ).all()
+
+#     learnings: list[DashboardCourseOut] = []
+#     total_modules_done = 0
+#     assessments_done = 0
+#     best_scores: list[float] = []
+
+#     for e in enrollments:
+#         course = e.course
+
+#         # ---- modules + content progress
+#         done_ids = set(
+#             db.scalars(
+#                 select(ContentProgress.content_id).where(
+#                     ContentProgress.student_id == user.id,
+#                     ContentProgress.course_id == course.id,
+#                 )
+#             )
+#         )
+#         n_modules = modules_done = n_items = items_done = 0
+#         for m in course.modules:
+#             if not m.visible:
+#                 continue
+#             items = [c for c in m.contents if c.visible]
+#             if not items:
+#                 continue
+#             n_modules += 1
+#             n_items += len(items)
+#             finished = sum(1 for c in items if c.id in done_ids)
+#             items_done += finished
+#             if finished == len(items):
+#                 modules_done += 1
+#         total_modules_done += modules_done
+
+#         pct = round(items_done / n_items * 100, 2) if n_items else 0.0
+#         learnings.append(
+#             DashboardCourseOut(
+#                 course_id=course.id,
+#                 full_name=course.full_name,
+#                 short_name=course.short_name,
+#                 enrolled_at=e.enrolled_at,
+#                 total_modules=n_modules,
+#                 modules_completed=modules_done,
+#                 total_items=n_items,
+#                 items_completed=items_done,
+#                 completion_percentage=pct,
+#                 is_completed=bool(n_items) and items_done == n_items,
+#             )
+#         )
+
+#         # ---- assessments of this course (module assessments + final)
+#         for a in _visible_assignments(db, course.id):
+#             attempts = _student_attempts(db, a.id, user.id)
+#             if any(t.status in ("submitted", "graded") for t in attempts):
+#                 assessments_done += 1
+#             best = _best_percentage(attempts)
+#             if best is not None:
+#                 best_scores.append(best)
+
+#     average = round(sum(best_scores) / len(best_scores), 2) if best_scores else 0.0
+#     return ApiResponse(
+#         data=DashboardOut(
+#             enrolled_courses=len(enrollments),
+#             modules_completed=total_modules_done,
+#             assignments_completed=assessments_done,
+#             average_assessment_score=average,
+#             learnings=learnings,
+#         )
+#     )
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+# ================================================================ STUDENT: dashboard
 class DashboardCourseOut(CamelModel):
     course_id: int
     full_name: str
@@ -409,16 +518,35 @@ class DashboardCourseOut(CamelModel):
     is_completed: bool
 
 
+class RecentAssignmentOut(CamelModel):
+    attempt_id: int
+    assignment_id: int
+    assignment_name: str
+    kind: str  # "module" | "final"
+    course_id: int
+    course_name: str
+    module_name: str | None  # None for the final assessment
+    attempt_no: int
+    score: float | None
+    total_score: float | None
+    percentage: float | None
+    passed: bool | None
+    status: str  # "graded" | "submitted" (submitted = still waiting for the teacher)
+    submitted_at: datetime
+
+
 class DashboardOut(CamelModel):
     enrolled_courses: int
     modules_completed: int
     assignments_completed: int
     average_assessment_score: float  # average of the best graded % of each assessment
     learnings: list[DashboardCourseOut]
+    recent_assignments: list[RecentAssignmentOut]  # latest completed attempts, newest first
 
 
 @router.get("/dashboard/me", response_model=ApiResponse[DashboardOut])
 def student_dashboard(
+    limit: int = Query(5, ge=1, le=50, description="How many recent assignments to return"),
     db: Session = Depends(get_db),
     user: User = Depends(require_role("student")),
 ):
@@ -439,9 +567,11 @@ def student_dashboard(
     total_modules_done = 0
     assessments_done = 0
     best_scores: list[float] = []
+    recent: list[RecentAssignmentOut] = []
 
     for e in enrollments:
         course = e.course
+        module_names = {m.id: m.name for m in course.modules}
 
         # ---- modules + content progress
         done_ids = set(
@@ -492,6 +622,28 @@ def student_dashboard(
             if best is not None:
                 best_scores.append(best)
 
+            for t in attempts:
+                if t.status in ("submitted", "graded") and t.submitted_at is not None:
+                    recent.append(
+                        RecentAssignmentOut(
+                            attempt_id=t.id,
+                            assignment_id=a.id,
+                            assignment_name=a.title,
+                            kind="module" if a.module_id is not None else "final",
+                            course_id=course.id,
+                            course_name=course.full_name,
+                            module_name=module_names.get(a.module_id),
+                            attempt_no=t.attempt_no,
+                            score=t.score,
+                            total_score=t.total_score,
+                            percentage=t.percentage,
+                            passed=t.passed,
+                            status=t.status,
+                            submitted_at=t.submitted_at,
+                        )
+                    )
+
+    recent.sort(key=lambda r: r.submitted_at, reverse=True)
     average = round(sum(best_scores) / len(best_scores), 2) if best_scores else 0.0
     return ApiResponse(
         data=DashboardOut(
@@ -500,9 +652,9 @@ def student_dashboard(
             assignments_completed=assessments_done,
             average_assessment_score=average,
             learnings=learnings,
+            recent_assignments=recent[:limit],
         )
     )
-
 
 class ModuleRestartOut(CamelModel):
     module_id: int

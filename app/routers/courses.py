@@ -2,7 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from typing import Literal
 
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import case, func, or_, select
+from sqlalchemy.orm import Session, contains_eager, selectinload
+
+from app.models import Category, Course, Enrollment, User
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models import Category, Course, User
@@ -10,6 +16,7 @@ from app.routers.categories import descendant_ids
 from app.schemas import (
     ApiResponse,
     CourseCreate,
+    CamelModel, 
     CourseListData,
     CourseOut,
     CourseUpdate,
@@ -202,3 +209,167 @@ def delete_course(
     db.delete(course)
     db.commit()
     return {"success": True, "message": "Course deleted."}
+
+# ============================================================== GLOBAL SEARCH
+search_router = APIRouter(prefix="/api/search", tags=["search"])
+
+
+class SearchCategoryOut(CamelModel):
+    id: int
+    name: str
+    description: str | None
+    parent_id: int | None
+    parent_name: str | None
+    course_count: int  # courses directly in this category (hidden ones excluded for students)
+
+
+class SearchCourseOut(CamelModel):
+    id: int
+    full_name: str
+    short_name: str
+    summary: str | None
+    category_id: int
+    category_name: str
+    enrolled: bool  # always false for teachers
+
+
+class SearchData(CamelModel):
+    query: str
+    categories: list[SearchCategoryOut]
+    courses: list[SearchCourseOut]
+    total_categories: int  # all matches (the lists above are cut at `limit`)
+    total_courses: int
+
+
+def _like_patterns(term: str) -> tuple[str, str]:
+    """("%term%", "term%") with the LIKE wildcards inside the user's text escaped."""
+    esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{esc}%", f"{esc}%"
+
+
+@search_router.get("", response_model=ApiResponse[SearchData])
+def global_search(
+    q: str = Query(..., min_length=1, max_length=100, description="Text to search for"),
+    type: Literal["all", "category", "course"] = Query("all"),
+    limit: int = Query(10, ge=1, le=50, description="Max results per type"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Search categories and courses at once. Students only see visible ones (same rules as the lists)."""
+    term = q.strip().lower()
+    if not term:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "Search text cannot be empty.")
+    contains, starts = _like_patterns(term)
+    esc = "\\"
+    teacher = _is_teacher(user)
+
+    categories: list[SearchCategoryOut] = []
+    total_categories = 0
+    if type in ("all", "category"):
+        cq = select(Category).where(
+            or_(
+                func.lower(Category.name).like(contains, escape=esc),
+                func.lower(Category.id_number).like(contains, escape=esc),
+                func.lower(Category.description).like(contains, escape=esc),
+            )
+        )
+        if not teacher:
+            cq = cq.where(Category.visible.is_(True))
+        total_categories = db.scalar(select(func.count()).select_from(cq.subquery())) or 0
+        rows = db.scalars(
+            cq.options(selectinload(Category.parent))
+            .order_by(
+                case((func.lower(Category.name).like(starts, escape=esc), 0), else_=1),
+                Category.name,
+            )
+            .limit(limit)
+        ).all()
+
+        counts: dict[int, int] = {}
+        if rows:
+            cc = select(Course.category_id, func.count()).where(
+                Course.category_id.in_([c.id for c in rows])
+            )
+            if not teacher:
+                cc = cc.where(Course.visible.is_(True))
+            counts = dict(db.execute(cc.group_by(Course.category_id)).all())
+        categories = [
+            SearchCategoryOut(
+                id=c.id,
+                name=c.name,
+                description=c.description,
+                parent_id=c.parent_id,
+                parent_name=c.parent.name if c.parent else None,
+                course_count=counts.get(c.id, 0),
+            )
+            for c in rows
+        ]
+
+    courses: list[SearchCourseOut] = []
+    total_courses = 0
+    if type in ("all", "course"):
+        kq = (
+            select(Course)
+            .join(Category, Category.id == Course.category_id)
+            .where(
+                or_(
+                    func.lower(Course.full_name).like(contains, escape=esc),
+                    func.lower(Course.short_name).like(contains, escape=esc),
+                    func.lower(Course.id_number).like(contains, escape=esc),
+                    func.lower(Course.summary).like(contains, escape=esc),
+                )
+            )
+        )
+        if not teacher:
+            kq = kq.where(Course.visible.is_(True), Category.visible.is_(True))
+        total_courses = db.scalar(select(func.count()).select_from(kq.subquery())) or 0
+        rows = db.scalars(
+            kq.options(contains_eager(Course.category))
+            .order_by(
+                case(
+                    (
+                        or_(
+                            func.lower(Course.full_name).like(starts, escape=esc),
+                            func.lower(Course.short_name).like(starts, escape=esc),
+                        ),
+                        0,
+                    ),
+                    else_=1,
+                ),
+                Course.full_name,
+            )
+            .limit(limit)
+        ).all()
+
+        enrolled: set[int] = set()
+        if rows and not teacher:
+            enrolled = set(
+                db.scalars(
+                    select(Enrollment.course_id).where(
+                        Enrollment.student_id == user.id,
+                        Enrollment.course_id.in_([c.id for c in rows]),
+                    )
+                )
+            )
+        courses = [
+            SearchCourseOut(
+                id=c.id,
+                full_name=c.full_name,
+                short_name=c.short_name,
+                summary=c.summary,
+                category_id=c.category_id,
+                category_name=c.category.name,
+                enrolled=c.id in enrolled,
+            )
+            for c in rows
+        ]
+
+    return ApiResponse(
+        data=SearchData(
+            query=q.strip(),
+            categories=categories,
+            courses=courses,
+            total_categories=total_categories,
+            total_courses=total_courses,
+        )
+    )

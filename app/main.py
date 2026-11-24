@@ -44,6 +44,7 @@ app.include_router(assignments.router)
 app.include_router(student_assessments.router)
 app.include_router(profile.router)
 app.include_router(translation.router)
+app.include_router(courses.search_router)
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):

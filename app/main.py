@@ -13,6 +13,7 @@ from app.routers import enrollments
 from app.routers import assignments
 from app.routers import student_assessments
 from app.routers import profile
+from app.routers import translation
 import app.assignment_models 
 
 Base.metadata.create_all(bind=engine)
@@ -42,6 +43,7 @@ app.include_router(enrollments.router)
 app.include_router(assignments.router)
 app.include_router(student_assessments.router)
 app.include_router(profile.router)
+app.include_router(translation.router)
 
 @app.exception_handler(RequestValidationError)
 async def validation_handler(request: Request, exc: RequestValidationError):

@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     SMTP_USER: str = ""
     SMTP_PASSWORD: str = ""
     SMTP_FROM: str = "no-reply@skillnext.com"
-
+        # Google Cloud Translation (POST /api/translation/translate)
+    GOOGLE_CLOUD_PROJECT: str = ""
 
 settings = Settings()

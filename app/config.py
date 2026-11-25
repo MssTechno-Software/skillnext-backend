@@ -65,5 +65,7 @@ class Settings(BaseSettings):
     SMTP_FROM: str = "no-reply@skillnext.com"
         # Google Cloud Translation (POST /api/translation/translate)
     GOOGLE_CLOUD_PROJECT: str = ""
+        # OpenAI (interview answer evaluation)
+    OPENAI_API_KEY: str = ""
 
 settings = Settings()
